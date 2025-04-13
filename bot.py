@@ -87,5 +87,6 @@ async def cancel_callback(callback_query: types.CallbackQuery):
                                 message_id=callback_query.message.message_id,
                                 text="❌ Отменено")
 
-keep_alive()
-executor.start_polling(dp)
+if __name__ == "__main__":
+    keep_alive()
+    executor.start_polling(dp)
