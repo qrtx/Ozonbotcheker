@@ -1,13 +1,11 @@
-from keep_alive import keep_alive
 
-import logging
 import os
+import aiohttp
+import asyncio
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils import executor
-import aiohttp
-import asyncio
-import datetime
+from keep_alive import keep_alive
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -15,11 +13,10 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 FIREBASE_URL = os.getenv("FIREBASE_URL")
 
-logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot)
 
-user_step = {}
+user_state = {}
 
 async def get_firebase(path):
     async with aiohttp.ClientSession() as session:
@@ -31,74 +28,64 @@ async def post_firebase(path, data):
         async with session.post(FIREBASE_URL + path + ".json", json=data) as resp:
             return await resp.json()
 
-async def delete_message(chat_id, message_id):
-    try:
-        await bot.delete_message(chat_id, message_id)
-    except:
-        pass
-
-@dp.message_handler(commands=["check"])
+@dp.message_handler(commands=["start", "check"])
 async def check_start(message: types.Message):
     employees = await get_firebase("employees")
     if not employees:
-        await message.reply("Список сотрудников пуст.")
+        await message.answer("Список сотрудников пуст.")
         return
 
-    keyboard = InlineKeyboardMarkup(row_width=2)
-    for emp in employees.values():
-        keyboard.insert(InlineKeyboardButton(text=emp, callback_data="emp_" + emp))
+    keyboard = InlineKeyboardMarkup()
+    for key in employees:
+        keyboard.add(InlineKeyboardButton(employees[key], callback_data=f"user:{employees[key]}"))
+    keyboard.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel"))
+    await message.answer("Кто вы?", reply_markup=keyboard)
 
-    keyboard.add(InlineKeyboardButton(text="❌ Отмена", callback_data="cancel"))
-    msg = await message.reply("Выберите своё имя:", reply_markup=keyboard)
-    user_step[message.from_user.id] = {"step": "await_name", "msg_id": msg.message_id}
+@dp.callback_query_handler(lambda c: c.data.startswith("user:"))
+async def select_user(callback_query: types.CallbackQuery):
+    name = callback_query.data.split(":")[1]
+    user_state[callback_query.from_user.id] = {"name": name}
 
-@dp.callback_query_handler(lambda c: c.data.startswith("emp_"))
-async def select_employee(callback: types.CallbackQuery):
-    emp = callback.data[4:]
     points = await get_firebase("points")
-    if not points:
-        await callback.answer("Нет доступных пунктов")
+    keyboard = InlineKeyboardMarkup()
+    for point in points:
+        keyboard.add(InlineKeyboardButton(f"{point}", callback_data=f"point:{point}"))
+    keyboard.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel"))
+    await bot.edit_message_text(chat_id=callback_query.message.chat.id,
+                                message_id=callback_query.message.message_id,
+                                text=f"Привет, {name}! Где ты сегодня работаешь?",
+                                reply_markup=keyboard)
+
+@dp.callback_query_handler(lambda c: c.data.startswith("point:"))
+async def select_point(callback_query: types.CallbackQuery):
+    point = callback_query.data.split(":")[1]
+    user_id = callback_query.from_user.id
+    name = user_state.get(user_id, {}).get("name")
+
+    if not name:
+        await bot.answer_callback_query(callback_query.id, "Ошибка: имя не выбрано.")
         return
 
-    await delete_message(callback.message.chat.id, callback.message.message_id)
+    now = asyncio.get_event_loop().time()
+    from datetime import datetime
+    dt = datetime.now()
+    date = f"{dt.year}-{dt.month:02}-{dt.day:02}"
 
-    keyboard = InlineKeyboardMarkup(row_width=1)
-    for p in points.keys():
-        keyboard.add(InlineKeyboardButton(text=p, callback_data="pnt_" + p))
+    await post_firebase("shifts", {
+        "employee": name,
+        "point": point,
+        "date": date
+    })
 
-    keyboard.add(InlineKeyboardButton(text="❌ Отмена", callback_data="cancel"))
-    msg = await bot.send_message(callback.message.chat.id, f"{emp}, выберите пункт:", reply_markup=keyboard)
-    user_step[callback.from_user.id] = {
-        "step": "await_point",
-        "name": emp,
-        "msg_id": msg.message_id
-    }
-
-@dp.callback_query_handler(lambda c: c.data.startswith("pnt_"))
-async def select_point(callback: types.CallbackQuery):
-    point = callback.data[4:]
-    step = user_step.get(callback.from_user.id)
-
-    if not step or step["step"] != "await_point":
-        await callback.answer("Сначала выберите имя")
-        return
-
-    name = step["name"]
-    await delete_message(callback.message.chat.id, step["msg_id"])
-
-    now = datetime.datetime.now().strftime("%Y-%m-%d")
-    data = {"employee": name, "point": point, "date": now}
-    await post_firebase("shifts", data)
-
-    await bot.send_message(callback.message.chat.id, f"{name} отметил(ся/ась) на пункте {point} — {now}!")
-
-if __name__ == "__main__":
-    keep_alive()
-    executor.start_polling(dp, skip_updates=True)
-
+    await bot.edit_message_text(chat_id=callback_query.message.chat.id,
+                                message_id=callback_query.message.message_id,
+                                text=f"✅ {name} отметил(ся/ась) на пункте {point} — {date}!")
 
 @dp.callback_query_handler(lambda c: c.data == "cancel")
-async def cancel_action(callback: types.CallbackQuery):
-    await delete_message(callback.message.chat.id, callback.message.message_id)
-    user_step.pop(callback.from_user.id, None)
-    await callback.answer("Действие отменено", show_alert=False)
+async def cancel_callback(callback_query: types.CallbackQuery):
+    await bot.edit_message_text(chat_id=callback_query.message.chat.id,
+                                message_id=callback_query.message.message_id,
+                                text="❌ Отменено")
+
+keep_alive()
+executor.start_polling(dp)
