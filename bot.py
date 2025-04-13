@@ -1,3 +1,4 @@
+from keep_alive import keep_alive
 
 import logging
 import os
@@ -47,6 +48,7 @@ async def check_start(message: types.Message):
     for emp in employees.values():
         keyboard.insert(InlineKeyboardButton(text=emp, callback_data="emp_" + emp))
 
+    keyboard.add(InlineKeyboardButton(text="❌ Отмена", callback_data="cancel"))
     msg = await message.reply("Выберите своё имя:", reply_markup=keyboard)
     user_step[message.from_user.id] = {"step": "await_name", "msg_id": msg.message_id}
 
@@ -64,6 +66,7 @@ async def select_employee(callback: types.CallbackQuery):
     for p in points.keys():
         keyboard.add(InlineKeyboardButton(text=p, callback_data="pnt_" + p))
 
+    keyboard.add(InlineKeyboardButton(text="❌ Отмена", callback_data="cancel"))
     msg = await bot.send_message(callback.message.chat.id, f"{emp}, выберите пункт:", reply_markup=keyboard)
     user_step[callback.from_user.id] = {
         "step": "await_point",
@@ -90,4 +93,12 @@ async def select_point(callback: types.CallbackQuery):
     await bot.send_message(callback.message.chat.id, f"{name} отметил(ся/ась) на пункте {point} — {now}!")
 
 if __name__ == "__main__":
+    keep_alive()
     executor.start_polling(dp, skip_updates=True)
+
+
+@dp.callback_query_handler(lambda c: c.data == "cancel")
+async def cancel_action(callback: types.CallbackQuery):
+    await delete_message(callback.message.chat.id, callback.message.message_id)
+    user_step.pop(callback.from_user.id, None)
+    await callback.answer("Действие отменено", show_alert=False)
